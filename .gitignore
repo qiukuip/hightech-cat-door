@@ -13,7 +13,7 @@ env/
 
 # YOLO weights & large model files
 *.pt
-*.onnx
+# *.onnx
 *.engine
 *.tflite
 *.pb
