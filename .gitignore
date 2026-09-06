@@ -1,0 +1,27 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+.venv/
+
+# YOLO weights & large model files
+*.pt
+*.onnx
+*.engine
+*.tflite
+*.pb
+
+# Datasets and large data
+dataset/
+photos/
+runs/
+
+# Test outputs
+model-val-*.jpeg
