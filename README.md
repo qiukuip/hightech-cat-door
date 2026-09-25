@@ -1,67 +1,68 @@
-# Hightech Cat Door
+# 高科技猫门
 
-An automatic cat door. Two ESP32-S3-CAM boards (one outdoor, one indoor) each with a VL53L1X time-of-flight radar and an OV2640 camera. The outdoor unit streams JPEG frames over a private TCP protocol to a Go server running on a local N100 mini-PC; the server runs YOLOv8n (single class `my-cat`) via a Python subprocess to decide whether to open. The indoor unit drives the door mechanism (two servos) and also has the camera wired — when its radar triggers, it sends one JPEG and asks the server to open directly.
+一个自动猫门系统。两块 ESP32-S3-CAM（室外、室内各一块），每块接一个 VL53L1X 测距雷达和一个 OV2640 摄像头。室外端把 JPEG 帧通过私有 TCP 协议流式发给本地 N100 迷你主机上的 Go 服务端；服务端通过 Python 子进程跑 YOLOv8n（单类别 `my-cat`），由它决定是否开门。室内端驱动门机（两个舵机），同时也接了摄像头——当室内雷达触发时，室内端拍一张 JPEG 并直接请求服务端开门。
 
-## Architecture
+## 架构
 
 ```
-   ┌─────────────┐   radar + JPEG     ┌──────────────────┐    YOLOv8n   ┌──────────┐
-   │ esp32out    │ ────────────────►  │ Go TCP server    │ ──────────► │ detect.py│
-   │ (outdoor)   │    TCP :1234       │ (state machine)  │ ◄────────── │ (Python) │
+   ┌─────────────┐   雷达 + JPEG     ┌──────────────────┐    YOLOv8n   ┌──────────┐
+   │ esp32out    │ ────────────────►  │ Go TCP 服务端    │ ──────────► │ detect.py│
+   │ (室外)      │    TCP :1234       │ (状态机)         │ ◄────────── │ (Python) │
    └─────────────┘                    └──────────────────┘             └──────────┘
                                               ▲  │
-                                              │  │ open/close commands
+                                              │  │ 开关门指令
                                               ▼  ▼
                                        ┌─────────────┐
-                                       │ esp32in     │  radar + JPEG + 2× servos
-                                       │ (indoor)    │
+                                       │ esp32in     │  雷达 + JPEG + 2× 舵机
+                                       │ (室内)      │
                                        └─────────────┘
 ```
 
-Door flow is symmetric: outdoor `0x1` detection → server opens → indoor reports passage → close. Indoor radar `0x9` → server opens → outdoor reports passage → close. State transitions are gated by `expectedPassage` so only the correct side's passage signal closes the door.
+门的状态流是对称的：室外 `0x1` 检测 → 服务端开门 → 室内上报通过 → 关；室内雷达 `0x9` → 服务端开门 → 室外上报通过 → 关。状态转移由 `expectedPassage` 把关，只有正确一侧的通过信号才会关门。
 
-## Repository layout
+## 目录结构
 
-| Path | Purpose |
+| 路径 | 用途 |
 |---|---|
-| `src/esp32out.ino` | Outdoor ESP32-S3-CAM firmware (radar → camera → JPEG → server) |
-| `src/esp32in.ino` | Indoor ESP32-S3-CAM firmware (servo control + radar-driven JPEG) |
-| `src/server/` | Go TCP server (protocol, state machine, saver, db) |
-| `src/client1/`, `src/client2/` | Legacy ASCII byte test clients |
-| `model-training/` | YOLOv8n training and ONNX export for the `my-cat` class |
-| `docs/` | Design notes (system spec, protocol, pinout) — in Chinese |
-| `scripts/` | Server launchers: `start-stub.sh`, `start-always.sh`, `start-python.sh` |
+| `src/esp32out.ino` | 室外 ESP32-S3-CAM 固件（雷达 → 摄像头 → JPEG → 服务端） |
+| `src/esp32in.ino` | 室内 ESP32-S3-CAM 固件（舵机控制 + 雷达触发的 JPEG） |
+| `src/server/` | Go TCP 服务端（协议、状态机、存档、数据库） |
+| `src/client1/`、`src/client2/` | 早期遗留的 ASCII 字节测试客户端 |
+| `model-training/` | 单类别 `my-cat` 的 YOLOv8n 训练与 ONNX 导出 |
+| `docs/` | 设计文档（系统方案、协议、接线）——中文 |
+| `scripts/` | 服务端启动脚本：`start-stub.sh`、`start-always.sh`、`start-python.sh` |
 
-For pinout, wire protocol, door-state machine, server flags, model-training commands, and known gotchas, see [`AGENTS.md`](./AGENTS.md).
+关于接线、通信协议、门状态机、服务端参数、模型训练命令和踩过的坑，见 [`AGENTS.md`](./AGENTS.md)。
 
-## Quick start
+## 快速开始
 
 ```bash
-# 1. Server with stub detector (never opens the door)
+# 1. 用 stub 检测器跑服务端（永远不会开门）
 ./scripts/start-stub.sh
 
-# 2. Server with always-open detector (smoke-test the wire)
+# 2. 用 always-open 检测器跑服务端（连通性冒烟测试）
 ./scripts/start-always.sh
 
-# 3. Server with real YOLOv8n
+# 3. 用真实的 YOLOv8n 跑服务端
 ./scripts/start-python.sh
-# or: go run ./src/server --detector=python \
+# 等价于：
+# go run ./src/server --detector=python \
 #     --model=model-training/best_int8.onnx \
 #     --script=model-training/detect.py \
 #     --save-dir=/var/cat-door/snapshots
 
-# 4. Flash ESP32 firmware (read docs/硬件连线设计.md first)
-#    Edit WIFI_SSID / WIFI_PASS / SERVER_HOST at the top of each .ino,
-#    then flash src/esp32out.ino and src/esp32in.ino to the two boards.
+# 4. 烧录 ESP32 固件（先看 docs/硬件连线设计.md）
+#    先编辑每个 .ino 文件顶部的 WIFI_SSID / WIFI_PASS / SERVER_HOST，
+#    然后把 src/esp32out.ino 和 src/esp32in.ino 分别烧到两块板子上。
 ```
 
-## Notes
+## 备注
 
-- Each ESP32 announces its role to the server with a one-time `0x8` register frame on connect (`{0x00}` outdoor / `{0x01}` indoor). The server reads this to classify the peer.
-- Both ESP32s connect to the same `SERVER_PORT` (default `1234`).
-- The Go server is intentionally not a workspace with `src/client{1,2}` — each package declares its own `module main`. Run them from inside their directories.
-- No tests, no CI, no linter config.
+- 两块 ESP32 在连上服务端时各发一次 `0x8` 注册帧声明身份（`{0x00}` 室外 / `{0x01}` 室内），服务端据此识别 peer。
+- 两块 ESP32 都连同一个 `SERVER_PORT`（默认 `1234`）。
+- Go 服务端没有和 `src/client{1,2}` 组成 workspace——每个包各自声明 `module main`，请在各自的目录里运行。
+- 没有测试、没有 CI、没有 lint 配置。
 
-## License
+## 许可
 
-Code is provided as-is. Dataset (Roboflow `cat-link` v1) is CC BY 4.0 — see `model-training/README.md`.
+代码按原样提供。数据集（Roboflow `cat-link` v1）为 CC BY 4.0——见 `model-training/README.md`。
