@@ -6,7 +6,7 @@
 //   1. 连接服务端（:1234），建立心跳。
 //   2. 接收 0x5 开门：舵机 1 → 60° 下拉把手；舵机 2 → 90° 推门至 15cm 缝。
 //   3. 上报 0x7 DoorStateOpen。
-//   4. 持续监测雷达；雷达在 INDOOR_OPEN_DISTANCE_CM 内：
+//   4. 持续监测雷达；雷达在 INDOOR_OPEN_DISTANCE_CM 内（连续 RADAR_DEBOUNCE_N 次相同读数才视为有效，防抖动）：
 //        a) 本次会话首次触发 → 初始化摄像头，拍单帧 JPEG，通过 0x9 上报（服务端跳过识别直接开门）。
 //        b) 上报 0x7 DoorStatePassage（仅一次，passageReported 去重）。
 //   5. 接收 0x6 关门：舵机 1 → 0°；舵机 2 → 0°。
@@ -80,6 +80,7 @@
 #define RADAR_ADDR_1            0x29
 #define INDOOR_OPEN_DISTANCE_CM 10   // 雷达 < 10cm 视为有猫（出门触发+进门通过检测共用）
 #define RADAR_POLL_MS           200
+#define RADAR_DEBOUNCE_N        3     // 防抖动：连续 N 次相同读数才翻转为稳定状态（200ms × N）
 #define HEARTBEAT_MS            30000
 #define WIFI_RECONNECT_MAX_MS   10000
 #define PROTOCOL_MAX_BODY       65531 // = 0xFFFF - 4
@@ -129,6 +130,10 @@ uint32_t lastHeartbeat = 0;
 uint32_t lastPoll      = 0;
 bool     passageReported   = false;
 bool     catSessionActive  = false;
+
+bool     radarRawLast       = false;
+uint8_t  radarStreak        = 0;
+bool     radarStable        = false;
 
 void initRadars() {
     pinMode(PIN_XSHUT1, OUTPUT);
@@ -183,11 +188,25 @@ void closeDoor() {
     delay(300);
 }
 
-bool passageDetected() {
+bool passageDetectedRaw() {
     uint16_t d = radar1.read();
     bool t = radar1.timeoutOccurred();
     if (t) return false;
     return (d / 10) <= INDOOR_OPEN_DISTANCE_CM;
+}
+
+bool passageStable() {
+    bool raw = passageDetectedRaw();
+    if (raw == radarRawLast) {
+        if (radarStreak < 255) radarStreak++;
+    } else {
+        radarRawLast = raw;
+        radarStreak  = 1;
+    }
+    if (radarStreak >= RADAR_DEBOUNCE_N) {
+        radarStable = raw;
+    }
+    return radarStable;
 }
 
 esp_err_t cameraInit() {
@@ -377,7 +396,7 @@ void loop() {
         handleServerFrame(type, body, bodyLen);
     }
 
-    bool cat = passageDetected();
+    bool cat = passageStable();
     if (cat) {
         if (!catSessionActive) {
             catSessionActive = true;

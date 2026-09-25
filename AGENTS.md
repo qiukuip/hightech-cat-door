@@ -92,15 +92,17 @@ Schema bootstrap runs `CREATE TABLE IF NOT EXISTS …` plus a `created_at DESC` 
 - Outdoor: `OPEN_CAMERA_DISTANCE_CM = 10` (`src/esp32out.ino`) — gates both the entry trigger (camera + `0x1`) and the `0xA` passage event.
 - Indoor: `INDOOR_OPEN_DISTANCE_CM = 10` (`src/esp32in.ino`) — gates both the exit trigger (`0x9`) and the `0x7` passage event.
 - Both default to 10 cm; change the `#define` and re-flash to adjust.
+- Debounce: `RADAR_DEBOUNCE_N = 3` in both `.ino` files. Each radar requires N consecutive identical readings (200 ms/poll × N) before the stable state flips; N=3 → 600 ms confirmation. Raise to slow the door, lower to react faster.
 
 ## Gotchas (read before touching the code)
 - `src/esp32out.ino` and `src/esp32in.ino` are written for ESP32-S3-CAM. Each side uses **one VL53L1X** at the default I2C address `0x29`; GPIO39 (`PIN_XSHUT2`) is left floating. If a second radar is added later, restore the XSHUT dance and assign `0x29` / `0x30` — see `initRadars()` history and `docs/硬件连线设计.md`.
 - Both sketches hard-code `WIFI_SSID`, `WIFI_PASS`, `SERVER_HOST` at the top. Change them before flashing.
 - Light sensor is on **GPIO 3 (ADC1_CH2)** in `esp32out.ino`. The original draft claimed GPIO 2 — that pin is I2C SCL and would short the bus. Don't revert.
 - Radar threshold is in cm: `(distanceMM / 10) <= THRESHOLD` (10 cm by default). This is integer division — values 0-10 cm trigger.
+- Both radars debounce by requiring `RADAR_DEBOUNCE_N` consecutive identical readings before the stable state flips — protects outdoor camera `init`/`deinit` and indoor `catSessionActive` reset from radar jitter.
 - Both ESP32s connect to the **same** `SERVER_PORT` (default `1234`). On connect each sends a one-time `0x8` register frame (`body = {0x00}` outdoor / `{0x01}` indoor) within 5s; the server reads it to classify the peer. If the frame doesn't arrive in time, the connection is closed.
-- `src/esp32in.ino` captures **one** JPEG per cat session (rising-edge only) and immediately deinits the camera. The cat session flag resets when radar goes quiet — re-approaching the door re-arms a fresh `0x9`.
-- `esp32out.ino` sends `0xA` every poll tick while radar detects cat; server de-bounces via state + `expectedPassage` so the same indoor cat won't trigger an outdoor close during entry flow.
+- `src/esp32in.ino` captures **one** JPEG per cat session (rising-edge only) and immediately deinits the camera. The cat session flag resets when the **debounced** radar has been clear for `RADAR_DEBOUNCE_N` polls (600 ms by default) — re-approaching the door re-arms a fresh `0x9`.
+- `esp32out.ino` sends `0xA` every poll tick while the **debounced** radar state is "cat present"; server de-bounces via state + `expectedPassage` so the same indoor cat won't trigger an outdoor close during entry flow.
 - `src/server/server.go` no longer panics on per-connection errors — it logs and exits the read loop. The listener keeps accepting new peers; a stale peer is closed when a new one with the same role connects.
 - `model-training/detect.py` keeps the ONNX model loaded across calls. Wire format on its stdin: `[4-byte LE length][jpeg bytes]`. Wire format on its stdout: 1 byte (`0x00` / `0x01`). The Go side speaks this in `src/server/detector.go` `PythonDetector`.
 - `model-training/export_onnx_int8.py` and `validate_onnx_int8.py` load from `runs/detect/train/weights/…`, but the README inside `model-training/` still references the old path `runs/detect/train-2/weights/best.pt` — trust the `.py` files.

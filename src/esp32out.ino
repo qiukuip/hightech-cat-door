@@ -2,7 +2,7 @@
 // 流：激光雷达 / 光照传感器 / 红外补光灯 / 摄像头 → 私有 TCP 协议 → 服务端
 //
 // 系统流程：
-//   1. 雷达每 200ms 检测猫是否在 10cm 内。
+//   1. 雷达每 200ms 检测猫是否在 10cm 内；连续 RADAR_DEBOUNCE_N 次相同读数才翻转为稳定状态（防抖动）。
 //   2. 检测到猫 → 读取光照传感器；若黑暗则开启红外补光灯。
 //   3. 初始化摄像头；按 4FPS 抓拍 JPEG，通过 TCP 0x1 帧上报服务端。
 //   4. 读取 0x2 响应（仅日志，服务端已直接命令门内侧开门）。
@@ -72,6 +72,7 @@
 #define OPEN_CAMERA_DISTANCE_CM 10
 #define LIGHT_SAMPLES           8
 #define RADAR_POLL_MS           200
+#define RADAR_DEBOUNCE_N        3     // 防抖动：连续 N 次相同读数才翻转为稳定状态（200ms × N）
 #define CAMERA_FRAME_MS         250   // 4 FPS
 #define HEARTBEAT_MS            30000
 #define WIFI_RECONNECT_MAX_MS   10000
@@ -108,6 +109,10 @@ uint32_t lastFrame     = 0;
 uint32_t lastPoll      = 0;
 bool     capturing     = false;
 
+bool     radarRawLast  = false;
+uint8_t  radarStreak   = 0;
+bool     radarStable   = false;
+
 void initRadars() {
     pinMode(PIN_XSHUT1, OUTPUT);
     digitalWrite(PIN_XSHUT1, LOW);
@@ -126,13 +131,27 @@ void initRadars() {
     Serial.printf("radar ok (0x%02X)\n", RADAR_ADDR_1);
 }
 
-bool catPresent() {
+bool catPresentRaw() {
     uint16_t d = radar1.read();
     bool t = radar1.timeoutOccurred();
 
     if (t) return false;
     if ((d / 10) <= OPEN_CAMERA_DISTANCE_CM) return true;
     return false;
+}
+
+bool catPresentStable() {
+    bool raw = catPresentRaw();
+    if (raw == radarRawLast) {
+        if (radarStreak < 255) radarStreak++;
+    } else {
+        radarRawLast = raw;
+        radarStreak  = 1;
+    }
+    if (radarStreak >= RADAR_DEBOUNCE_N) {
+        radarStable = raw;
+    }
+    return radarStable;
 }
 
 bool isBright() {
@@ -318,7 +337,7 @@ void loop() {
         lastHeartbeat = now;
     }
 
-    bool cat = catPresent();
+    bool cat = catPresentStable();
     if (cat) {
         sendOutdoorPassage();
         if (!capturing) {
