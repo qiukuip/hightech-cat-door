@@ -19,9 +19,27 @@ env/
 *.pb
 
 # Datasets and large data
-dataset/
-photos/
-runs/
+model-training/dataset/test/images/*
+model-training/dataset/test/labels/*
+model-training/dataset/train/images/*
+model-training/dataset/train/labels/*
+model-training/dataset/train/labels.cache
+model-training/dataset/valid/images/*
+model-training/dataset/valid/labels/*
+model-training/dataset/valid/labels.cache
+model-training/photos/*
+model-training/runs/detect/predict/*
+model-training/runs/detect/train/*
+model-training/export*
+model-training/validate*
 
 # Test outputs
 model-val-*.jpeg
+
+# Go build artifacts
+src/server/main
+src/server/server
+src/server/stub
+src/server/always
+src/server/python
+*.exe
