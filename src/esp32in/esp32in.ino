@@ -15,13 +15,14 @@
 
 #include <WiFi.h>
 #include <Wire.h>
-#include <VL53L1X.h>
+#include <Adafruit_VL53L1X.h>
+#include <ESP32Servo.h>
 #include "esp_camera.h"
 
 // ============= 用户配置 =============
-#define WIFI_SSID       "YOUR_SSID"
-#define WIFI_PASS       "YOUR_PASS"
-#define SERVER_HOST     "192.168.1.100"
+#define WIFI_SSID       "3-105"
+#define WIFI_PASS       "31053105"
+#define SERVER_HOST     "192.168.0.114"
 #define SERVER_PORT     1234   // 与 esp32out 共用同一端口；身份由 0x8 register 帧声明
 // ====================================
 
@@ -85,23 +86,16 @@
 #define WIFI_RECONNECT_MAX_MS   10000
 #define PROTOCOL_MAX_BODY       65531 // = 0xFFFF - 4
 
-// 舵机：50Hz，500-2500µs 对应 0-180°
-#define SERVO_FREQ              50
-#define SERVO_RES               16
-#define SERVO_PULSE_MIN_US      500
-#define SERVO_PULSE_MAX_US      2500
-#define SERVO_PERIOD_US         20000
-
-#define SERVO1_CH               0
-#define SERVO2_CH               1
-
+// 舵机：50Hz，1000-2000µs 对应 0-180°（MG996R/MG990R 标准）
 #define SERVO1_HANDLE_CLOSED    0     // 释放把手
 #define SERVO1_HANDLE_OPEN      60    // 下拉把手至 60°
 #define SERVO2_DOOR_CLOSED      0     // 关门
 #define SERVO2_DOOR_OPEN        90    // 推门至 15cm 缝（按现场机械标定）
 // =================================
 
-VL53L1X radar1;
+Adafruit_VL53L1X radar1;
+Servo servo1;
+Servo servo2;
 
 static camera_config_t camera_config = {
     .pin_pwdn  = CAM_PIN_PWDN,
@@ -142,56 +136,48 @@ void initRadars() {
     digitalWrite(PIN_XSHUT1, HIGH);
     delay(10);
 
-    if (radar1.init()) {
-        Serial.println("radar init failed");
+    if (!radar1.begin(RADAR_ADDR_1)) {
+        Serial.printf("radar init failed (status=%d)\n", (int)radar1.vl_status);
         while (1) delay(1000);
     }
-    radar1.setDistanceMode(VL53L1X::Short);
-    radar1.setMeasurementTimingBudget(50000);
-    radar1.startContinuous(200);
+    radar1.VL53L1X_SetDistanceMode(1);
+    radar1.setTimingBudget(50);
+    radar1.VL53L1X_SetInterMeasurementInMs(200);
+    radar1.startRanging();
 
     Serial.printf("radar ok (0x%02X)\n", RADAR_ADDR_1);
 }
 
-uint32_t angleToDuty(int angle) {
-    if (angle < 0) angle = 0;
-    if (angle > 180) angle = 180;
-    uint32_t pulseUs = SERVO_PULSE_MIN_US +
-        (uint32_t)(SERVO_PULSE_MAX_US - SERVO_PULSE_MIN_US) * angle / 180;
-    return (uint32_t)((uint64_t)pulseUs * 65535ULL / SERVO_PERIOD_US);
-}
-
 void initServos() {
-    ledcSetup(SERVO1_CH, SERVO_FREQ, SERVO_RES);
-    ledcAttachPin(PIN_SERVO1, SERVO1_CH);
-    ledcSetup(SERVO2_CH, SERVO_FREQ, SERVO_RES);
-    ledcAttachPin(PIN_SERVO2, SERVO2_CH);
+    servo1.setPeriodHertz(50);
+    servo1.attach(PIN_SERVO1, 1000, 2000);
+    servo2.setPeriodHertz(50);
+    servo2.attach(PIN_SERVO2, 1000, 2000);
 
-    ledcWrite(SERVO1_CH, angleToDuty(SERVO1_HANDLE_CLOSED));
-    ledcWrite(SERVO2_CH, angleToDuty(SERVO2_DOOR_CLOSED));
+    servo1.write(SERVO1_HANDLE_CLOSED);
+    servo2.write(SERVO2_DOOR_CLOSED);
     Serial.println("servos at closed position");
 }
 
 void openDoor() {
     Serial.println("opening door");
-    ledcWrite(SERVO1_CH, angleToDuty(SERVO1_HANDLE_OPEN));
+    servo1.write(SERVO1_HANDLE_OPEN);
     delay(500);
-    ledcWrite(SERVO2_CH, angleToDuty(SERVO2_DOOR_OPEN));
+    servo2.write(SERVO2_DOOR_OPEN);
     delay(800);
 }
 
 void closeDoor() {
     Serial.println("closing door");
-    ledcWrite(SERVO2_CH, angleToDuty(SERVO2_DOOR_CLOSED));
+    servo2.write(SERVO2_DOOR_CLOSED);
     delay(800);
-    ledcWrite(SERVO1_CH, angleToDuty(SERVO1_HANDLE_CLOSED));
+    servo1.write(SERVO1_HANDLE_CLOSED);
     delay(300);
 }
 
 bool passageDetectedRaw() {
-    uint16_t d = radar1.read();
-    bool t = radar1.timeoutOccurred();
-    if (t) return false;
+    int16_t d = radar1.distance();
+    if (d < 0) return false;
     return (d / 10) <= INDOOR_OPEN_DISTANCE_CM;
 }
 

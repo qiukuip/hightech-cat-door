@@ -17,12 +17,15 @@ import (
 
 const (
 	defaultListenAddr = ":1234"
-	defaultModelPath  = "model-training/best_int8.onnx"
-	defaultScriptPath = "model-training/detect.py"
+	defaultModelPath  = "/home/longkun/Documents/projects/hightech-cat-door/model-training/best_int8.onnx"
+	defaultScriptPath = "/home/longkun/Documents/projects/hightech-cat-door/model-training/detect.py"
+	defaultSaveDir    = "/home/longkun/Pictures/hightech-cat-door"
+	defaultDBDSN      = "postgresql://postgres:postgres@localhost:5432/postgres"
 	openHoldDuration  = 30 * time.Second
 	readIdleTimeout   = 60 * time.Second
 	writeDeadline     = 10 * time.Second
 	registerTimeout   = 5 * time.Second
+	heartbeatInterval = 25 * time.Second
 )
 
 type peerRole int
@@ -71,11 +74,11 @@ func (p *peer) writeFrame(f Frame) error {
 func main() {
 	var (
 		listenAddr   = flag.String("listen", defaultListenAddr, "TCP listen address (both esp32out and esp32in connect here; role is announced via 0x8 register frame)")
-		detectorKind = flag.String("detector", "stub", "stub | always | python")
+		detectorKind = flag.String("detector", "python", "stub | always | python")
 		modelPath    = flag.String("model", defaultModelPath, "ONNX model path (python detector)")
 		scriptPath   = flag.String("script", defaultScriptPath, "python helper script")
-		saveDir      = flag.String("save-dir", "", "if non-empty, save every JPEG that triggered a cat event (entry: detector says cat; exit: indoor radar trigger) into <save-dir>/{outdoor,indoor}/. empty disables saving.")
-		dbDSN        = flag.String("db-dsn", "", "PostgreSQL DSN for door-event and detection logging; empty disables DB logging (waiting for configuration).")
+		saveDir      = flag.String("save-dir", defaultSaveDir, "if non-empty, save every JPEG that triggered a cat event (entry: detector says cat; exit: indoor radar trigger) into <save-dir>/{outdoor,indoor}/. empty disables saving.")
+		dbDSN        = flag.String("db-dsn", defaultDBDSN, "PostgreSQL DSN for door-event and detection logging; empty disables DB logging (waiting for configuration).")
 	)
 	flag.Parse()
 
@@ -154,16 +157,19 @@ func (s *Server) run() error {
 	s.logger.Printf("listening %s (single port, role-via-0x8-register) detector=%T", l.Addr(), s.detector)
 
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		s.acceptLoop(l)
-	}()
+	})
+	wg.Go(func() {
+		s.heartbeatLoop()
+	})
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	sig := <-sigCh
 	s.logger.Printf("signal received: %v; shutting down", sig)
+
+	_ = l.Close()
 	wg.Wait()
 	return nil
 }
@@ -181,6 +187,32 @@ func (s *Server) acceptLoop(l net.Listener) {
 		s.logger.Printf("accepted: %s", conn.RemoteAddr())
 		go s.handle(conn)
 	}
+}
+
+func (s *Server) heartbeatLoop() {
+	t := time.NewTicker(heartbeatInterval)
+	defer t.Stop()
+	for range t.C {
+		for _, role := range s.peersSnapshot() {
+			p := s.getPeer(role)
+			if p == nil {
+				continue
+			}
+			if err := p.writeFrame(Frame{Type: TypeHeartbeat}); err != nil {
+				s.logger.Printf("%s heartbeat write: %v", peerRoleName[role], err)
+			}
+		}
+	}
+}
+
+func (s *Server) peersSnapshot() []peerRole {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	roles := make([]peerRole, 0, len(s.peers))
+	for r := range s.peers {
+		roles = append(roles, r)
+	}
+	return roles
 }
 
 func (s *Server) handle(conn net.Conn) {

@@ -11,7 +11,7 @@
 
 #include <WiFi.h>
 #include <Wire.h>
-#include <VL53L1X.h>
+#include <Adafruit_VL53L1X.h>
 #include "esp_camera.h"
 
 // ============= 用户配置 =============
@@ -101,7 +101,7 @@ static camera_config_t camera_config = {
     .grab_mode = CAMERA_GRAB_LATEST,
 };
 
-VL53L1X radar1;
+Adafruit_VL53L1X radar1;
 
 WiFiClient tcp;
 uint32_t lastHeartbeat = 0;
@@ -120,24 +120,22 @@ void initRadars() {
     digitalWrite(PIN_XSHUT1, HIGH);
     delay(10);
 
-    if (radar1.init()) {
-        Serial.println("radar init failed");
+    if (!radar1.begin(RADAR_ADDR_1)) {
+        Serial.printf("radar init failed (status=%d)\n", (int)radar1.vl_status);
         while (1) delay(1000);
     }
-    radar1.setDistanceMode(VL53L1X::Short);
-    radar1.setMeasurementTimingBudget(50000);
-    radar1.startContinuous(200);
+    radar1.VL53L1X_SetDistanceMode(1);
+    radar1.setTimingBudget(50);
+    radar1.VL53L1X_SetInterMeasurementInMs(200);
+    radar1.startRanging();
 
     Serial.printf("radar ok (0x%02X)\n", RADAR_ADDR_1);
 }
 
 bool catPresentRaw() {
-    uint16_t d = radar1.read();
-    bool t = radar1.timeoutOccurred();
-
-    if (t) return false;
-    if ((d / 10) <= OPEN_CAMERA_DISTANCE_CM) return true;
-    return false;
+    int16_t d = radar1.distance();
+    if (d < 0) return false;
+    return (d / 10) <= OPEN_CAMERA_DISTANCE_CM;
 }
 
 bool catPresentStable() {
