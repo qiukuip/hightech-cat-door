@@ -4,7 +4,7 @@
 //
 // 系统流程：
 //   1. 连接服务端（:1234），建立心跳。
-//   2. 接收 0x5 开门：舵机 1 → 60° 下拉把手；舵机 2 → 90° 推门至 15cm 缝。
+//   2. 接收 0x5 开门：舵机 1 → 180° 下拉把手；舵机 2 → 180° 推门至 15cm 缝。
 //   3. 上报 0x7 DoorStateOpen。
 //   4. 持续监测雷达；雷达在 INDOOR_OPEN_DISTANCE_CM 内（连续 RADAR_DEBOUNCE_N 次相同读数才视为有效，防抖动）：
 //        a) 本次会话首次触发 → 初始化摄像头，拍单帧 JPEG，通过 0x9 上报（服务端跳过识别直接开门）。
@@ -79,7 +79,7 @@
 
 // ============= 调参 =============
 #define RADAR_ADDR_1            0x29
-#define INDOOR_OPEN_DISTANCE_CM 10   // 雷达 < 10cm 视为有猫（出门触发+进门通过检测共用）
+#define INDOOR_OPEN_DISTANCE_CM 20   // 雷达 ≤ 20cm 视为有猫（出门触发+进门通过检测共用）
 #define RADAR_POLL_MS           200
 #define RADAR_DEBOUNCE_N        3     // 防抖动：连续 N 次相同读数才翻转为稳定状态（200ms × N）
 #define HEARTBEAT_MS            30000
@@ -87,15 +87,19 @@
 #define PROTOCOL_MAX_BODY       65531 // = 0xFFFF - 4
 
 // 舵机：50Hz，1000-2000µs 对应 0-180°（MG996R/MG990R 标准）
+// 摇臂较短 → 用满 180° 行程补偿线位移
 #define SERVO1_HANDLE_CLOSED    0     // 释放把手
-#define SERVO1_HANDLE_OPEN      60    // 下拉把手至 60°
+#define SERVO1_HANDLE_OPEN      180   // 下拉把手至 180°
 #define SERVO2_DOOR_CLOSED      0     // 关门
-#define SERVO2_DOOR_OPEN        90    // 推门至 15cm 缝（按现场机械标定）
+#define SERVO2_DOOR_OPEN        180   // 推门至全行程（摇臂较短，用满 180°）
+#define SERVO_FULL_ROTATE_MS    5000  // 转动 180° 用时 5s（按角度差成比例缩放）
 // =================================
 
 Adafruit_VL53L1X radar1;
 Servo servo1;
 Servo servo2;
+int    servo1Current = 0;
+int    servo2Current = 0;
 
 static camera_config_t camera_config = {
     .pin_pwdn  = CAM_PIN_PWDN,
@@ -156,23 +160,38 @@ void initServos() {
 
     servo1.write(SERVO1_HANDLE_CLOSED);
     servo2.write(SERVO2_DOOR_CLOSED);
+    servo1Current = SERVO1_HANDLE_CLOSED;
+    servo2Current = SERVO2_DOOR_CLOSED;
     Serial.println("servos at closed position");
+}
+
+void servoMoveSlow(Servo& s, int fromAngle, int toAngle, int& current) {
+    int diff = toAngle - fromAngle;
+    if (diff == 0) return;
+    int absDiff = abs(diff);
+    uint32_t duration = (uint32_t)((uint64_t)SERVO_FULL_ROTATE_MS * absDiff / 180);
+    uint32_t start = millis();
+    int step = (diff > 0) ? 1 : -1;
+    for (int i = 1; i <= absDiff; i++) {
+        int angle = fromAngle + step * i;
+        s.write(angle);
+        uint32_t elapsed = millis() - start;
+        uint32_t desired = (uint32_t)((uint64_t)duration * i / absDiff);
+        if (elapsed < desired) delay(desired - elapsed);
+    }
+    current = toAngle;
 }
 
 void openDoor() {
     Serial.println("opening door");
-    servo1.write(SERVO1_HANDLE_OPEN);
-    delay(500);
-    servo2.write(SERVO2_DOOR_OPEN);
-    delay(800);
+    servoMoveSlow(servo1, servo1Current, SERVO1_HANDLE_OPEN, servo1Current);
+    servoMoveSlow(servo2, servo2Current, SERVO2_DOOR_OPEN, servo2Current);
 }
 
 void closeDoor() {
     Serial.println("closing door");
-    servo2.write(SERVO2_DOOR_CLOSED);
-    delay(800);
-    servo1.write(SERVO1_HANDLE_CLOSED);
-    delay(300);
+    servoMoveSlow(servo2, servo2Current, SERVO2_DOOR_CLOSED, servo2Current);
+    servoMoveSlow(servo1, servo1Current, SERVO1_HANDLE_CLOSED, servo1Current);
 }
 
 bool passageDetectedRaw() {

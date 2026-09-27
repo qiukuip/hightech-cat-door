@@ -156,12 +156,15 @@ func (s *Server) run() error {
 
 	s.logger.Printf("listening %s (single port, role-via-0x8-register) detector=%T", l.Addr(), s.detector)
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	var wg sync.WaitGroup
 	wg.Go(func() {
-		s.acceptLoop(l)
+		s.acceptLoop(ctx, l)
 	})
 	wg.Go(func() {
-		s.heartbeatLoop()
+		s.heartbeatLoop(ctx)
 	})
 
 	sigCh := make(chan os.Signal, 1)
@@ -169,12 +172,24 @@ func (s *Server) run() error {
 	sig := <-sigCh
 	s.logger.Printf("signal received: %v; shutting down", sig)
 
+	cancel()
+	s.closePeers()
 	_ = l.Close()
-	wg.Wait()
+
+	doneCh := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(doneCh)
+	}()
+	select {
+	case <-doneCh:
+	case <-time.After(5 * time.Second):
+		s.logger.Printf("shutdown timeout; exiting anyway")
+	}
 	return nil
 }
 
-func (s *Server) acceptLoop(l net.Listener) {
+func (s *Server) acceptLoop(ctx context.Context, l net.Listener) {
 	for {
 		conn, err := l.Accept()
 		if err != nil {
@@ -185,23 +200,37 @@ func (s *Server) acceptLoop(l net.Listener) {
 			return
 		}
 		s.logger.Printf("accepted: %s", conn.RemoteAddr())
-		go s.handle(conn)
+		go s.handle(ctx, conn)
 	}
 }
 
-func (s *Server) heartbeatLoop() {
+func (s *Server) heartbeatLoop(ctx context.Context) {
 	t := time.NewTicker(heartbeatInterval)
 	defer t.Stop()
-	for range t.C {
-		for _, role := range s.peersSnapshot() {
-			p := s.getPeer(role)
-			if p == nil {
-				continue
-			}
-			if err := p.writeFrame(Frame{Type: TypeHeartbeat}); err != nil {
-				s.logger.Printf("%s heartbeat write: %v", peerRoleName[role], err)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			for _, role := range s.peersSnapshot() {
+				p := s.getPeer(role)
+				if p == nil {
+					continue
+				}
+				if err := p.writeFrame(Frame{Type: TypeHeartbeat}); err != nil {
+					s.logger.Printf("%s heartbeat write: %v", peerRoleName[role], err)
+				}
 			}
 		}
+	}
+}
+
+func (s *Server) closePeers() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for r, p := range s.peers {
+		_ = p.conn.Close()
+		s.logger.Printf("%s: closing for shutdown", peerRoleName[r])
 	}
 }
 
@@ -215,8 +244,18 @@ func (s *Server) peersSnapshot() []peerRole {
 	return roles
 }
 
-func (s *Server) handle(conn net.Conn) {
+func (s *Server) handle(ctx context.Context, conn net.Conn) {
 	defer conn.Close()
+
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		select {
+		case <-ctx.Done():
+			conn.Close()
+		case <-stop:
+		}
+	}()
 
 	role, ok := s.readRegister(conn)
 	if !ok {
@@ -328,11 +367,13 @@ func (s *Server) onOutdoorFrame(f Frame) error {
 		if err := oc.writeFrame(Frame{Type: TypeDetectResult, Body: []byte{result}}); err != nil {
 			s.logger.Printf("send detect result: %v", err)
 		}
+
+		path, err := s.saver.save("outdoor", f.Body)
+		if err != nil {
+			s.logger.Printf("save outdoor jpeg: %v", err)
+		}
+
 		if isCat {
-			path, err := s.saver.save("outdoor", f.Body)
-			if err != nil {
-				s.logger.Printf("save outdoor jpeg: %v", err)
-			}
 			if path != "" {
 				s.eventLogger.LogDetection(DetectionEvent{
 					Direction: "outdoor",
@@ -381,7 +422,7 @@ func (s *Server) onIndoorFrame(f Frame) error {
 			s.eventLogger.LogDetection(DetectionEvent{
 				Direction: "indoor",
 				ImagePath: path,
-				Result:    "cat",
+				Result:    "indoor-trigger",
 			})
 		}
 		s.door.requestOpen(roleIndoor)

@@ -15,9 +15,9 @@
 #include "esp_camera.h"
 
 // ============= 用户配置 =============
-#define WIFI_SSID       "YOUR_SSID"
-#define WIFI_PASS       "YOUR_PASS"
-#define SERVER_HOST     "192.168.1.100"
+#define WIFI_SSID       "3-105"
+#define WIFI_PASS       "31053105"
+#define SERVER_HOST     "192.168.0.114"
 #define SERVER_PORT     1234   // 与 esp32in 共用同一端口；身份由 0x8 register 帧声明
 // ====================================
 
@@ -69,10 +69,10 @@
 
 // ============= 调参 =============
 #define BRIGHT_BOUND            2500
-#define OPEN_CAMERA_DISTANCE_CM 10
+#define OPEN_CAMERA_DISTANCE_CM 20
 #define LIGHT_SAMPLES           8
-#define RADAR_POLL_MS           200
-#define RADAR_DEBOUNCE_N        3     // 防抖动：连续 N 次相同读数才翻转为稳定状态（200ms × N）
+#define RADAR_POLL_MS           700
+#define RADAR_DEBOUNCE_N        3     // 防抖动：连续 N 次相同读数才翻转为稳定状态（RADAR_POLL_MS × N）
 #define CAMERA_FRAME_MS         250   // 4 FPS
 #define HEARTBEAT_MS            30000
 #define WIFI_RECONNECT_MAX_MS   10000
@@ -126,7 +126,7 @@ void initRadars() {
     }
     radar1.VL53L1X_SetDistanceMode(1);
     radar1.setTimingBudget(50);
-    radar1.VL53L1X_SetInterMeasurementInMs(200);
+    radar1.VL53L1X_SetInterMeasurementInMs(700);
     radar1.startRanging();
 
     Serial.printf("radar ok (0x%02X)\n", RADAR_ADDR_1);
@@ -139,6 +139,13 @@ bool catPresentRaw() {
 }
 
 bool catPresentStable() {
+    static uint32_t lastDbg = 0;
+    if (millis() - lastDbg > 1000) {
+        int16_t d = radar1.distance();
+        Serial.printf("radar raw=%d mm  (%d cm)\n", d, d / 10);
+        lastDbg = millis();
+    }
+
     bool raw = catPresentRaw();
     if (raw == radarRawLast) {
         if (radarStreak < 255) radarStreak++;

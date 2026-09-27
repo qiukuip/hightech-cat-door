@@ -80,7 +80,7 @@ When `--db-dsn` is non-empty, the server uses `pgxpool` to log two kinds of even
   - `event='close_request'` from `requestClose` (source = side whose passage was expected, reason = `'timeout'` | `'passage'` | `'passage-outdoor'`)
   - `event='closed'` from indoor `0x7` `0x00` (source `'indoor'`)
 - `detections` — one row per JPEG that **was actually persisted to disk** (i.e. `--save-dir` is non-empty). For outdoor `0x1` detections that returned not-cat, no row is written (no image exists).
-  - `direction='outdoor' | 'indoor'`, `image_path` = absolute path the saver wrote, `result='cat'`
+  - `direction='outdoor' | 'indoor'`, `image_path` = absolute path the saver wrote, `result='cat'` for outdoor (YOLO said cat) or `result='indoor-trigger'` for indoor (no YOLO — radar-triggered, assumed cat going out).
 
 Schema bootstrap runs `CREATE TABLE IF NOT EXISTS …` plus a `created_at DESC` index on each table on startup. Both tables also have `id BIGSERIAL PRIMARY KEY` and `created_at TIMESTAMPTZ NOT NULL DEFAULT now()`.
 

@@ -5,7 +5,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 cd "$REPO_ROOT/src/server"
 
-SAVE_DIR="${SAVE_DIR:-/var/cat-door/snapshots}"
+SAVE_DIR="${SAVE_DIR:-/home/longkun/Pictures/hightech-cat-door}"
 DB_DSN="${DB_DSN:-}"
 
 ARGS=(
